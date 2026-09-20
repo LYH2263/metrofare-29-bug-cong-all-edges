@@ -173,6 +173,40 @@ def test_history_snapshot_keeps_congestion_after_clearing(tmp_path, monkeypatch)
         assert snapshot["congestion_total"] == 1.5
         assert snapshot["payable"] == 5.5
 
+        # 再次清边必须是幂等的，且依旧不改写旧记录
+        s.clear_congestion("A2", "B1")
+        again = json.loads(s.run(run_id)["result_json"])
+        assert again["congestion_edges"][0]["b"] == "B1"
+        assert again["congestion_total"] == 1.5
+
+
+def test_history_snapshot_only_lists_congestion_on_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.db.DB_PATH", tmp_path / "test.db")
+    seed.init_db()
+    with MetroService() as s:
+        # 途经边 A1—A2 加价 0.5；B1—B2 当时也是拥挤边，但不在 A1→A3 的途经上
+        s.set_congestion("A1", "A2", "light", 0.5)
+        s.set_congestion("B1", "B2", "severe", 9.0)
+        out = s.quote("A1", "A3", persist=True)
+        assert out["congestion_total"] == 0.5
+        assert out["congestion_edges"] == [
+            {"a": "A1", "b": "A2", "level": "light", "surcharge": 0.5}
+        ]
+
+        snapshot = json.loads(s.run(out["run_id"])["result_json"])
+        # 详情列表只含写入当时途经上的边，合计与列表一致
+        assert snapshot["congestion_edges"] == [
+            {"a": "A1", "b": "A2", "level": "light", "surcharge": 0.5}
+        ]
+        assert snapshot["congestion_total"] == sum(
+            e["surcharge"] for e in snapshot["congestion_edges"]
+        )
+
+        # 清掉非途经边后，旧记录同样不受影响
+        s.clear_congestion("B1", "B2")
+        snapshot2 = json.loads(s.run(out["run_id"])["result_json"])
+        assert snapshot2 == snapshot
+
 
 # ---------- HTTP 接口 ----------
 

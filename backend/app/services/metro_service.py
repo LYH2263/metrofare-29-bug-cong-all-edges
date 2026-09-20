@@ -1,5 +1,3 @@
-import json
-
 from app.db import connect
 from app.engines.route_quote import quote_route
 from app.modules.congestion_surcharge import (
@@ -64,21 +62,7 @@ class MetroService:
         if not edges_repo.exists(self._conn, a, b):
             raise CongestionError(f"边 {a}—{b} 不存在，不能清除拥挤附加")
         removed = congestion_repo.delete(self._conn, a, b)
-        for row in runs_repo.list_recent(self._conn, 200):
-            try:
-                result = json.loads(row["result_json"])
-            except Exception:
-                continue
-            edges = result.get("congestion_edges") or []
-            kept = [e for e in edges if not (e.get("a") == a and e.get("b") == b)]
-            if len(kept) != len(edges):
-                result["congestion_edges"] = kept
-                result["congestion_total"] = round(sum(float(e.get("surcharge") or 0) for e in kept), 2)
-                self._conn.execute(
-                    "UPDATE calc_runs SET result_json=? WHERE id=?",
-                    (json.dumps(result, ensure_ascii=False), row["id"]),
-                )
-                self._conn.commit()
+        # 历史记录是写入时的冻结快照：清边只影响后续试算，不得回改旧记录
         return {"a": a, "b": b, "removed": removed}
 
     def fare_rules(self):
@@ -101,14 +85,9 @@ class MetroService:
         return runs_repo.list_recent(self._conn, limit)
 
     def run(self, run_id: int):
-        row = runs_repo.get_by_id(self._conn, run_id)
-        if row is None:
-            return None
-        result = json.loads(row["result_json"])
-        result["congestion_edges"] = congestion_repo.list_all(self._conn)
-        row = dict(row)
-        row["result_json"] = json.dumps(result, ensure_ascii=False)
-        return row
+        # 原样返回冻结快照：拥挤边只含写入当时途经上的边，合计即这些边加价之和，
+        # 不受后续设置/清除拥挤边影响
+        return runs_repo.get_by_id(self._conn, run_id)
 
     def dashboard(self):
         st = stations_repo.list_all(self._conn)
